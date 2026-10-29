@@ -22,6 +22,7 @@ import struct
 from typing import List, Tuple
 
 Vec3 = Tuple[float, float, float]
+Point3D = Vec3
 Triangle = Tuple[Vec3, Vec3, Vec3]
 
 DIHEDRAL_DEG = 5.0  # 5.0 graus por semi-asa = 10.0 graus total (41.4mm de elevação na ponta)
@@ -385,33 +386,167 @@ def triangulate_cap_with_holes(
 # 4. ASA BIPARTIDA COM NERVURAS GEODÉSICAS 0% INFILL + TÚNEL DE DIEDRO 5.0°/LADO
 # ==============================================================================
 
+def wing_spar_and_aux_x(y_span: float) -> Tuple[float, float]:
+    """
+    Eixos 100% retilíneos (linhas retas no espaço 3D) para o tubo principal de carbono Ø6x4mm
+    e para a vareta auxiliar traseira Ø2mm de y = 0mm até y = 450mm (onde encontram o Pino de Lançamento):
+    - Longarina Principal Ø6mm: X = 49.0mm na raiz (y=0) -> X = 75.0mm em y=450mm (linha 100% reta!)
+    - Longarina Auxiliar Ø2mm: X = 96.8mm na raiz (y=0) -> X = 96.8mm em y=450mm (linha 100% reta!)
+    Isso garante que os tubos retos de carbono permaneçam sempre na zona de maior espessura (28% a 33%
+    da corda local) do início ao fim, ancorando diretamente o pino de lançamento Ø4mm em y=450mm!
+    """
+    u = max(0.0, min(1.0, y_span / 450.0))
+    spar_x = 49.0 + 26.0 * u
+    aux_x = 96.8
+    return spar_x, aux_x
+
+
 def wing_chord_and_le_at_span(y_span: float) -> Tuple[float, float]:
     """
-    Geometria trapezoidal limpa alinhada pela Longarina Principal (32.67% da corda = X = 49.0mm fixo):
-    - Na raiz (y = 0mm): corda = 150.0mm, LE = 0.0mm, Longarina = 49.0mm (32.67%), Dobradiça = 112.5mm (75%)
-    - No meio (y = 245mm): corda = 126.8mm
-    - Na ponta (y = 475mm): corda = 105.0mm (área alar total exata = 2 * 475 * (150+105)/2 = 121.125 mm² + flaperon = 12.6 dm²)
-    Como a variação é linear de y=0 a y=475mm e a linha de 32.67% da corda é fixa em X = 49.0mm:
-    1. O tubo principal de carbono Ø6x4mm (em X = 49.0mm) fica SEMPRE no ponto de espessura máxima
-       do perfil (32.67% da corda) da raiz até a ponta, NUNCA cruzando o bordo de ataque!
-    2. A linha da dobradiça do flaperon (75% da corda), a vareta auxiliar (64% da corda) e a vareta
-       antitorção do flaperon (78.5% da corda) são TODAS linhas 100% retas de y=0 até y=475mm!
+    Planta estilo FlightPoint Luft / Drela AG com Ponta Elíptica Assimétrica C1-Contínua (zero quina no BA e zero bico no BF!):
+    - De y = 0 até y = 415mm (região dos flaperons):
+      - Bordo de Ataque (LE) afila linearmente de X_LE = 0.0mm (raiz) até X_LE = 42.5mm (em y=415mm).
+      - Bordo de Fuga (TE) afila linearmente de X_TE = 150.0mm (raiz) até X_TE = 129.5mm (em y=415mm, corda = 87.0mm).
+    - De y = 415mm até y = 475mm (últimos 60mm — Ponteira Arredondada de Corda Integral):
+      - O Bordo de Ataque descreve um arco elíptico C1-contínuo amplo (raio ~60mm) até X = 102.5mm em y=475mm.
+      - O Bordo de Fuga descreve um arco elíptico C1-contínuo suave (raio ~23mm) até X = 106.5mm em y=475mm.
+      - Resultado: Tanto o Bordo de Ataque quanto o Bordo de Fuga fecham em curva tangente vertical arredondada
+        em y=475mm (sem nenhuma ponta viva traseira!), idêntico às duas fotos de referência!
     """
-    u = max(0.0, min(1.0, y_span / 475.0))
-    chord = 150.0 - 45.0 * u  # 150.0mm na raiz -> 126.8mm em y=245mm -> 105.0mm na ponta (y=475mm)
-    spar_frac = 49.0 / 150.0  # 0.326667 (ponto de espessura máxima do perfil)
-    le_x = 49.0 - spar_frac * chord
+    if y_span <= 415.0:
+        u = max(0.0, y_span / 415.0)
+        le_x = 42.5 * u
+        te_x = 150.0 - 20.5 * u
+    else:
+        w = min(1.0, (y_span - 415.0) / 60.0)
+        rad = math.sqrt(max(0.0, 1.0 - w))
+        # Arco frontal amplo C1-contínuo: le_x(0)=42.5, le_x'(0)=+6.145, le_x(1)=102.5 com tangente vertical
+        le_x = 102.5 - rad * (60.0 + 23.855 * w)
+        # Arco traseiro suave C1-contínuo: te_x(0)=129.5, te_x'(0)=-2.964, te_x(1)=106.5 com tangente vertical
+        te_x = 106.5 + rad * (23.0 + 8.536 * w)
+
+    chord = max(4.0, te_x - le_x)
     return chord, le_x
 
 
 def wing_thickness_ratio_at_span(y_span: float) -> float:
     """
-    Progressão aerodinâmica de perfil tipo AG455ct (7.4% na raiz) -> AG47ct (8.2% na ponta)
-    para garantir que na ponta da asa (corda 105mm) a espessura na longarina seja 8.6mm,
-    mantendo parede sólida generosa acima e abaixo do tubo de carbono Ø6mm!
+    Progressão aerodinâmica de perfil tipo AG455ct (7.4% na raiz) -> AG47ct (10.0% em y=430..450mm)
+    para abrigar com folga o tubo de carbono Ø6mm e o pino Ø4mm, afinando na borda arredondada (y=450..475mm).
     """
-    u = max(0.0, min(1.0, y_span / 475.0))
-    return 0.074 + 0.008 * u
+    if y_span <= 450.0:
+        u = max(0.0, y_span / 450.0)
+        return 0.074 + 0.026 * (u ** 1.25)
+    else:
+        w = min(1.0, (y_span - 450.0) / 25.0)
+        return 0.100 * math.sqrt(max(0.18, 1.0 - 0.65 * (w ** 2)))
+
+
+def wing_box_end_frac_at_span(y_span: float) -> float:
+    """
+    Fração da corda onde termina a caixa estrutural principal da asa (W1 / W2):
+    - De y = 0 a y = 415mm (região dos Flaperons): termina em 74.0% da corda (logo à frente do pino da dobradiça em 77.0%).
+    - De y = 415mm a y = 430mm: rampa suave a 45° (100% imprimível sem suporte na vertical!)
+      levando a parede traseira de 74.0% até 100.0% da corda.
+    - De y = 430mm a y = 475mm (Ponta Arredondada tipo FlightPoint Luft): corda integral (100.0%),
+      eliminando qualquer degrau no bordo de fuga e dando máxima rigidez ao pino de lançamento!
+    """
+    if y_span <= 415.0:
+        return 0.740
+    elif y_span >= 430.0:
+        return 1.000
+    else:
+        w = (y_span - 415.0) / 15.0
+        return 0.740 + 0.260 * w
+
+
+def generate_wing_hinge_knuckle(
+    y0: float,
+    y1: float,
+    y_start_seg: float,
+    is_right_wing: bool,
+    x_start_frac: float,
+    x_end_frac: float,
+    pin_frac: float,
+    pin_radius: float,
+    bevel_bottom: bool,
+    bevel_top: bool,
+    anchor_at_front: bool,
+    n_slices: int = 14,
+) -> List[Triangle]:
+    """
+    Gera um Olhal Cilíndrico/Aerodinâmico de Dobradiça (Knuckle) com chanfros de 45° na base/topo
+    (100% auto-suportado na impressão vertical sem suporte!) e furo coaxial para o pino-eixo da dobradiça.
+    - Se `anchor_at_front=True` (Olhal da Asa): ancora em `x_start_frac` (73.4%) e avança até `x_end_frac` (79.8%).
+    - Se `anchor_at_front=False` (Olhal do Flaperon): ancora em `x_end_frac` (81.4%) e avança até `x_start_frac` (74.8%).
+    """
+    sign_y = 1.0 if is_right_wing else -1.0
+    outer_loops_3d: List[List[Point3D]] = []
+    hole_loops_3d: List[List[Point3D]] = []
+
+    for s in range(n_slices):
+        v = s / (n_slices - 1)
+        y_span_base = y0 + v * (y1 - y0)
+        chord, le_x = wing_chord_and_le_at_span(y_span_base)
+        t_ratio = wing_thickness_ratio_at_span(y_span_base)
+        x_anchor = le_x + (x_start_frac if anchor_at_front else x_end_frac) * chord
+
+        loop_2d = get_airfoil_loop(
+            chord=chord,
+            x_offset=le_x,
+            y_offset=0.0,
+            t_ratio=t_ratio,
+            camber=0.018,
+            x_start_frac=x_start_frac,
+            x_end_frac=x_end_frac,
+            n_pts=36,
+            te_min_mm=1.2,
+        )
+        if not is_right_wing:
+            loop_2d = [(px, -py) for (px, py) in reversed(loop_2d)]
+
+        # Posição retilínea exata do eixo da dobradiça (77.0% da corda)
+        pin_x = le_x + pin_frac * chord
+        yu_p, yl_p = airfoil_synerj_dlg(pin_frac, t_ratio=t_ratio, m=0.018)
+        pin_cy = 0.5 * (yu_p + yl_p) * chord * sign_y
+        hole_2d = get_circle_loop(pin_x, pin_cy, pin_radius, n_pts=36)
+
+        def map_pt_3d(px: float, py: float) -> Point3D:
+            d_anc = abs(px - x_anchor)
+            z_bot = (y0 - y_start_seg) + (0.72 * d_anc if bevel_bottom else 0.0)
+            z_top = (y1 - y_start_seg) - (0.72 * d_anc if bevel_top else 0.0)
+            if z_top < z_bot + 0.4:
+                z_mid = 0.5 * (z_bot + z_top)
+                z_bot, z_top = z_mid - 0.2, z_mid + 0.2
+            z_val = z_bot + v * (z_top - z_bot)
+            return (px, py, z_val)
+
+        outer_loops_3d.append([map_pt_3d(px, py) for (px, py) in loop_2d])
+        hole_loops_3d.append([map_pt_3d(px, py) for (px, py) in hole_2d])
+
+    tris: List[Triangle] = []
+    m_pts = len(outer_loops_3d[0])
+    h_pts = len(hole_loops_3d[0])
+
+    for s in range(n_slices - 1):
+        o0, o1 = outer_loops_3d[s], outer_loops_3d[s + 1]
+        h0, h1 = hole_loops_3d[s], hole_loops_3d[s + 1]
+        for i in range(m_pts):
+            ni = (i + 1) % m_pts
+            tris.extend(quad_to_tris(o0[i], o0[ni], o1[ni], o1[i], flip=False))
+        for i in range(h_pts):
+            ni = (i + 1) % h_pts
+            tris.extend(quad_to_tris(h0[i], h0[ni], h1[ni], h1[i], flip=True))
+
+    # Tampas anelares (base s=0 e topo s=n_slices-1)
+    for cap_idx, flip_cap in [(0, True), (n_slices - 1, False)]:
+        oc = outer_loops_3d[cap_idx]
+        hc = hole_loops_3d[cap_idx]
+        for i in range(m_pts):
+            ni = (i + 1) % m_pts
+            tris.extend(quad_to_tris(oc[i], oc[ni], hc[ni % h_pts], hc[i % h_pts], flip=flip_cap))
+
+    return tris
 
 
 def generate_wing_segment(
@@ -422,28 +557,189 @@ def generate_wing_segment(
     n_slices: int = 70,
 ) -> List[Triangle]:
     """
-    Gera o segmento da asa (W1 245mm ou W2 230mm) com coordenadas internas 100% proporcionais
-    à corda local c(y), garantindo que NENHUMA câmara oca ou furo jamais cruze a casca externa:
-    1. Casca externa de 0.45mm (1 perímetro de bico 0.4mm)
-    2. Túnel da Longarina Principal Ø6x4mm (furo Ø6.25mm sempre em X = 49.0mm = 32.67% da corda!)
-    3. Túnel de Baioneta Retilínea Angulada em -5.0° (nos primeiros 55mm de W1)
-    4. Túnel da Longarina Auxiliar Ø2mm (sempre em 64.5% da corda local — linha 100% reta!)
-    5. 5 Câmaras Ocas separadas por Nervuras Diagonais Geodésicas a 45° no CAD (0% Infill)
+    Gera o segmento da asa (W1 245mm ou W2 230mm com Ponta Arredondada estilo FlightPoint Luft):
+    - Em W1 (0..245mm) e na seção estrutural de W2 (245..450mm):
+      Possui as câmaras ocas com nervuras geodésicas + túnel retilíneo principal Ø6.25mm + túnel auxiliar Ø2.25mm.
+      Entre y=415mm e y=430mm, o bordo de fuga de W2 se expande de 74.5% para 100% da corda (após o fim do flaperon),
+      formando uma ponteira de corda total sem degrau traseiro!
+    - Na Ponta Elíptica Arredondada de W2 (450..475mm, além do pino de lançamento Ø4mm):
+      Fecha o arco de quarto de elipse com 2 câmaras de alívio internas (450..471.5mm) e calota
+      arredondada 3D fechada na extremidade (471.5..475.0mm)!
     """
-    z_slices = []
-    outer_loops = []
-    hole_loops = []
     rib_thick = 0.86
     skin_wall = 0.48
     sign_y = 1.0 if is_right_wing else -1.0
 
-    for s in range(n_slices):
-        v = s / (n_slices - 1)
-        y_span = y_start + v * (y_end - y_start)
+    def build_main_wing_block(y0: float, y1: float, num_s: int) -> List[Triangle]:
+        z_slices = []
+        outer_loops = []
+        hole_loops = []
+        for s in range(num_s):
+            v = s / (num_s - 1)
+            y_span = y0 + v * (y1 - y0)
+            z_local = y_span - y_start
+            chord, le_x = wing_chord_and_le_at_span(y_span)
+            t_ratio = wing_thickness_ratio_at_span(y_span)
+            x_end_f = wing_box_end_frac_at_span(y_span)
+            rear_wall_x = le_x + x_end_f * chord
+
+            loop = get_airfoil_loop(
+                chord=chord,
+                x_offset=le_x,
+                y_offset=0.0,
+                t_ratio=t_ratio,
+                camber=0.018,
+                x_start_frac=0.0,
+                x_end_frac=x_end_f,
+                n_pts=52,
+                te_min_mm=1.2 if x_end_f < 0.85 else 0.85,
+            )
+            if not is_right_wing:
+                loop = [(px, -py) for (px, py) in reversed(loop)]
+
+            spar_x, aux_x = wing_spar_and_aux_x(y_span)
+            spar_frac_local = max(0.15, min(0.55, (spar_x - le_x) / chord))
+            yu_spar, yl_spar = airfoil_synerj_dlg(spar_frac_local, t_ratio=t_ratio, m=0.018)
+            spar_cy = 0.5 * (yu_spar + yl_spar) * chord * sign_y
+            spar_r = 3.125 if y_span <= 400.0 else (3.125 - 0.85 * ((y_span - 400.0) / 50.0))
+            hole_main = get_circle_loop(spar_x, spar_cy, spar_r, n_pts=36)
+
+            aux_frac_local = max(0.45, min(0.72, (aux_x - le_x) / chord))
+            yu_aux, yl_aux = airfoil_synerj_dlg(aux_frac_local, t_ratio=t_ratio, m=0.018)
+            aux_cy = 0.5 * (yu_aux + yl_aux) * chord * sign_y
+            hole_aux = get_circle_loop(aux_x, aux_cy, 1.125, n_pts=36)
+
+            diag_wave = triangle_wave(2.0 * math.pi * y_span / 36.0)
+
+            if y_start < 10.0:
+                dih_x = le_x + 0.255 * chord
+                z_clamped = min(y_span, 55.0)
+                dihedral_tunnel_cy = (2.40 - z_clamped * DIHEDRAL_TAN) * sign_y
+                dihedral_r = 2.08 if y_span <= 56.0 else 1.15
+                hole_dihedral = get_circle_loop(dih_x, dihedral_tunnel_cy, dihedral_r, n_pts=32)
+
+                dbox_start = le_x + 0.035 * chord
+                dbox_end = dih_x - dihedral_r - 1.1
+                dbox_mid_base = 0.5 * (dbox_start + dbox_end)
+                dbox_amp = 0.25 * (dbox_end - dbox_start)
+                rib_dbox_x = dbox_mid_base + dbox_amp * diag_wave
+                bay_dbox_1 = get_airfoil_hollow_bay_loop(
+                    dbox_start, rib_dbox_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+                )
+                bay_dbox_2 = get_airfoil_hollow_bay_loop(
+                    rib_dbox_x + 0.5 * rib_thick, dbox_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+                )
+                front_holes = [bay_dbox_1, bay_dbox_2, hole_dihedral]
+            else:
+                dbox_start = le_x + max(2.6, 0.045 * chord)
+                dbox_end = spar_x - spar_r - 1.2
+                dbox_mid_base = 0.5 * (dbox_start + dbox_end)
+                dbox_amp = 0.24 * (dbox_end - dbox_start)
+                rib_dbox_x = dbox_mid_base + dbox_amp * diag_wave
+                bay_dbox_1 = get_airfoil_hollow_bay_loop(
+                    dbox_start, rib_dbox_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+                )
+                bay_dbox_2 = get_airfoil_hollow_bay_loop(
+                    rib_dbox_x + 0.5 * rib_thick, dbox_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+                )
+                front_holes = [bay_dbox_1, bay_dbox_2]
+
+            peg_extra_wall = 3.5 if (has_peg_socket and y_span >= 440.0) else 0.0
+            mid_start = spar_x + spar_r + 1.2 + peg_extra_wall
+            mid_end = aux_x - 2.0
+            mid_span_w = mid_end - mid_start
+            rib_m1_x = mid_start + 0.33 * mid_span_w + 0.10 * mid_span_w * diag_wave
+            rib_m2_x = mid_start + 0.67 * mid_span_w - 0.10 * mid_span_w * diag_wave
+
+            bay_mid_1 = get_airfoil_hollow_bay_loop(
+                mid_start, rib_m1_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+            )
+            bay_mid_2 = get_airfoil_hollow_bay_loop(
+                rib_m1_x + 0.5 * rib_thick, rib_m2_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+            )
+            bay_mid_3 = get_airfoil_hollow_bay_loop(
+                rib_m2_x + 0.5 * rib_thick, mid_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+            )
+            bay_rear = get_airfoil_hollow_bay_loop(
+                aux_x + 1.8, rear_wall_x - (2.2 if x_end_f > 0.85 else 1.4), chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+            )
+
+            z_slices.append(z_local)
+            outer_loops.append(loop)
+            hole_loops.append(
+                front_holes + [
+                    hole_main,
+                    bay_mid_1,
+                    bay_mid_2,
+                    bay_mid_3,
+                    hole_aux,
+                    bay_rear,
+                ]
+            )
+        return loft_with_holes(outer_loops, hole_loops, z_slices)
+
+    if y_end <= 450.0:
+        tris_w1 = build_main_wing_block(y_start, y_end, n_slices)
+        # Adiciona os 3 Olhais Machos Intercalados da Dobradiça (Knuckles a 45°) em W1 (0..245mm):
+        # Pino-eixo coaxial Ø2.0mm em 77.0% da corda (raio do furo = 1.08mm)
+        for ky0, ky1, bev_b, bev_t in [
+            (0.0, 19.0, False, True),      # Olhal 1 (Raiz de W1 - apoia na mesa Z=0 e chanfra a 45° no topo)
+            (114.0, 134.0, True, True),    # Olhal 2 (Central de W1 - chanfrado a 45° na base e no topo)
+            (229.0, 245.0, True, False),   # Olhal 3 (Junção W1/W2 - chanfrado a 45° na base e plano no topo Z=245)
+        ]:
+            tris_w1.extend(
+                generate_wing_hinge_knuckle(
+                    y0=ky0,
+                    y1=ky1,
+                    y_start_seg=y_start,
+                    is_right_wing=is_right_wing,
+                    x_start_frac=0.733,
+                    x_end_frac=0.798,
+                    pin_frac=0.770,
+                    pin_radius=1.08,
+                    bevel_bottom=bev_b,
+                    bevel_top=bev_t,
+                    anchor_at_front=True,
+                )
+            )
+        return tris_w1
+
+    # Para o segmento externo W2 (245.0 a 475.0mm):
+    # - Bloco 1 (245.0 a 450.0mm): Estrutura principal com longarinas Ø6mm e Ø2mm terminando na nervura do pino (y=450mm)
+    tris = build_main_wing_block(y_start, 450.0, 58)
+
+    # Adiciona os 3 Olhais Machos Intercalados da Dobradiça (Knuckles a 45°) em W2 (245..430mm):
+    for ky0, ky1, bev_b, bev_t in [
+        (245.0, 261.0, False, True),   # Olhal 4 (Base de W2 na mesa Z=0, chanfra a 45° em y=261mm)
+        (326.0, 346.0, True, True),    # Olhal 5 (Central de W2, chanfrado a 45° na base e no topo)
+        (409.0, 428.0, True, False),   # Olhal 6 (Ponta de W2, fundindo-se à ponteira integral em y=428mm)
+    ]:
+        tris.extend(
+            generate_wing_hinge_knuckle(
+                y0=ky0,
+                y1=ky1,
+                y_start_seg=y_start,
+                is_right_wing=is_right_wing,
+                x_start_frac=0.733,
+                x_end_frac=0.798,
+                pin_frac=0.770,
+                pin_radius=1.08,
+                bevel_bottom=bev_b,
+                bevel_top=bev_t,
+                anchor_at_front=True,
+            )
+        )
+
+    # - Bloco 2 (450.0 a 472.0mm): Ponta Elíptica Arredondada de Corda Integral (100% corda) com 2 câmaras ocas e reforço do Pino Ø4mm
+    z_b2, out_b2, hol_b2 = [], [], []
+    n_b2 = 24
+    for s in range(n_b2):
+        v = s / (n_b2 - 1)
+        y_span = 450.0 + v * (472.0 - 450.0)
         z_local = y_span - y_start
         chord, le_x = wing_chord_and_le_at_span(y_span)
         t_ratio = wing_thickness_ratio_at_span(y_span)
-        hinge_wall_x = le_x + 0.745 * chord
+        te_wall_x = le_x + chord
 
         loop = get_airfoil_loop(
             chord=chord,
@@ -452,104 +748,57 @@ def generate_wing_segment(
             t_ratio=t_ratio,
             camber=0.018,
             x_start_frac=0.0,
-            x_end_frac=0.745,
-            n_pts=52,
-            te_min_mm=1.2,
+            x_end_frac=1.0,
+            n_pts=48,
+            te_min_mm=0.85,
         )
         if not is_right_wing:
             loop = [(px, -py) for (px, py) in reversed(loop)]
 
-        # 1. Furo do Tubo de Carbono Principal Ø6.0mm (sempre em X = 49.0mm = 32.67% da corda!)
-        spar_x = 49.0
-        yu_spar, yl_spar = airfoil_synerj_dlg((spar_x - le_x) / chord, t_ratio=t_ratio, m=0.018)
-        spar_cy = 0.5 * (yu_spar + yl_spar) * chord * sign_y
-        # O tubo de carbono de 450mm vai até y=450mm; nos últimos 25mm (y=450..475) reduz p/ Ø3.6mm
-        spar_r = 3.125 if y_span <= 452.0 else 1.80
-        hole_main = get_circle_loop(spar_x, spar_cy, spar_r, n_pts=36)
-
-        # 2. Furo da Vareta Auxiliar Ø2.0mm (linha reta em 64.5% da corda: X=96.75mm na raiz -> X=72.9mm na ponta)
-        aux_x = le_x + 0.645 * chord
-        yu_aux, yl_aux = airfoil_synerj_dlg(0.645, t_ratio=t_ratio, m=0.018)
-        aux_cy = 0.5 * (yu_aux + yl_aux) * chord * sign_y
-        hole_aux = get_circle_loop(aux_x, aux_cy, 1.125, n_pts=36)
-
-        # 3. Nervuras Diagonais Geodésicas Internas (Warren Truss a 45°), 100% proporcionais à corda local!
-        diag_wave = triangle_wave(2.0 * math.pi * y_span / 36.0)
-
-        if y_start < 10.0:
-            # Painel W1: inclui o Túnel Angulado de Diedro (-5.0°) em 25.5% da corda
-            dih_x = le_x + 0.255 * chord
-            z_clamped = min(y_span, 55.0)
-            dihedral_tunnel_cy = (2.40 - z_clamped * DIHEDRAL_TAN) * sign_y
-            dihedral_r = 2.08 if y_span <= 56.0 else 1.15
-            hole_dihedral = get_circle_loop(dih_x, dihedral_tunnel_cy, dihedral_r, n_pts=32)
-
-            dbox_start = le_x + 0.035 * chord
-            dbox_end = dih_x - dihedral_r - 1.1
-            dbox_mid_base = 0.5 * (dbox_start + dbox_end)
-            dbox_amp = 0.25 * (dbox_end - dbox_start)
-            rib_dbox_x = dbox_mid_base + dbox_amp * diag_wave
-            bay_dbox_1 = get_airfoil_hollow_bay_loop(
-                dbox_start, rib_dbox_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-            )
-            bay_dbox_2 = get_airfoil_hollow_bay_loop(
-                rib_dbox_x + 0.5 * rib_thick, dbox_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-            )
-            front_holes = [bay_dbox_1, bay_dbox_2, hole_dihedral]
-        else:
-            # Painel W2: D-Box limpo proporcional entre 4% da corda e (spar_x - spar_r - 1.2mm)
-            dbox_start = le_x + 0.040 * chord
-            dbox_end = spar_x - spar_r - 1.2
-            dbox_mid_base = 0.5 * (dbox_start + dbox_end)
-            dbox_amp = 0.28 * (dbox_end - dbox_start)
-            rib_dbox_x = dbox_mid_base + dbox_amp * diag_wave
-            bay_dbox_1 = get_airfoil_hollow_bay_loop(
-                dbox_start, rib_dbox_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-            )
-            bay_dbox_2 = get_airfoil_hollow_bay_loop(
-                rib_dbox_x + 0.5 * rib_thick, dbox_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-            )
-            front_holes = [bay_dbox_1, bay_dbox_2]
-
-        # Caixa Central de Torção proporcional entre (spar_x + spar_r + 1.2mm) e (aux_x - 2.2mm)
-        # Se for a região do Launch Peg na asa esquerda (442mm <= y_span <= 458mm), engrossa a parede
-        # ao redor da longarina principal (bloco sólido interno p/ furar o pino de carbono Ø4mm rente à casca!)
-        peg_extra_wall = 4.5 if (has_peg_socket and 440.0 <= y_span <= 460.0) else 0.0
-        mid_start = spar_x + spar_r + 1.2 + peg_extra_wall
-        mid_end = aux_x - 2.2
-        mid_span_w = mid_end - mid_start
-        rib_m1_x = mid_start + 0.33 * mid_span_w + 0.11 * mid_span_w * diag_wave
-        rib_m2_x = mid_start + 0.67 * mid_span_w - 0.11 * mid_span_w * diag_wave
-
-        bay_mid_1 = get_airfoil_hollow_bay_loop(
-            mid_start, rib_m1_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+        # Duas câmaras internas proporcionais que acompanham a curvatura elíptica do bordo de ataque
+        # Na asa com pino (has_peg_socket), reserva bloco maciço ao redor de X=75.0mm (y=450..458mm) para o Pino Ø4mm!
+        peg_pad = 9.0 * max(0.0, 1.0 - (y_span - 450.0) / 8.0) if has_peg_socket else 0.0
+        b_start = le_x + max(2.6, 0.08 * chord) + peg_pad
+        b_end = te_wall_x - max(2.4, 0.08 * chord)
+        b_mid = 0.5 * (b_start + b_end)
+        bay_tip_1 = get_airfoil_hollow_bay_loop(
+            b_start, b_mid - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing, n_seg=10
         )
-        bay_mid_2 = get_airfoil_hollow_bay_loop(
-            rib_m1_x + 0.5 * rib_thick, rib_m2_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
+        bay_tip_2 = get_airfoil_hollow_bay_loop(
+            b_mid + 0.5 * rib_thick, b_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing, n_seg=10
         )
-        bay_mid_3 = get_airfoil_hollow_bay_loop(
-            rib_m2_x + 0.5 * rib_thick, mid_end, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-        )
+        z_b2.append(z_local)
+        out_b2.append(loop)
+        hol_b2.append([bay_tip_1, bay_tip_2])
 
-        # Câmara Traseira Pré-Dobradiça proporcional entre (aux_x + 2.2mm) e (hinge_wall_x - 1.5mm)
-        bay_rear = get_airfoil_hollow_bay_loop(
-            aux_x + 2.2, hinge_wall_x - 1.5, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing
-        )
+    tris.extend(loft_with_holes(out_b2, hol_b2, z_b2))
 
-        z_slices.append(z_local)
-        outer_loops.append(loop)
-        hole_loops.append(
-            front_holes + [
-                hole_main,
-                bay_mid_1,
-                bay_mid_2,
-                bay_mid_3,
-                hole_aux,
-                bay_rear,
-            ]
+    # - Bloco 3 (472.0 a 475.0mm): Calota Externa 3D Arredondada e Fechada da Ponta da Asa (Corda Integral)
+    z_b3, out_b3 = [], []
+    n_b3 = 12
+    for s in range(n_b3):
+        v = s / (n_b3 - 1)
+        y_span = 472.0 + v * (475.0 - 472.0)
+        z_local = y_span - y_start
+        chord, le_x = wing_chord_and_le_at_span(y_span)
+        t_ratio = wing_thickness_ratio_at_span(y_span) * math.sqrt(max(0.14, 1.0 - 0.80 * (v ** 1.8)))
+        loop = get_airfoil_loop(
+            chord=chord,
+            x_offset=le_x,
+            y_offset=0.0,
+            t_ratio=t_ratio,
+            camber=0.018 * (1.0 - 0.5 * v),
+            x_start_frac=0.0,
+            x_end_frac=1.0,
+            n_pts=48,
+            te_min_mm=0.8,
         )
+        if not is_right_wing:
+            loop = [(px, -py) for (px, py) in reversed(loop)]
+        z_b3.append(z_local)
+        out_b3.append(loop)
 
-    tris = loft_with_holes(outer_loops, hole_loops, z_slices)
+    tris.extend(loft_with_holes(out_b3, [], z_b3))
     return tris
 
 
@@ -559,6 +808,14 @@ def generate_flaperon_segment(
     is_right_wing: bool,
     n_slices: int = 50,
 ) -> List[Triangle]:
+    """
+    Gera o Aileron/Flaperon com Sistema de Dobradiça Mecânica Intertravada (Pin-Hinge Knuckles a 45°):
+    - Corpo aerodinâmico traseiro contínuo (80.4% a 100.0% da corda) com câmara oca + nervuras geodésicas
+      e túnel de alinhamento antitorção (83.2% da corda).
+    - Olhais Frontais de Dobradiça (74.6% a 81.2% da corda, com furo coaxial Ø2.15mm em 77.0% da corda)
+      intercalados exatamente nos vãos entre os olhais da asa (W1 / W2), permitindo encaixe direto
+      com uma vareta reta de carbono Ø2.0mm (ou aço Ø1.5mm) sem precisar colar dobradiça!
+    """
     z_slices = []
     outer_loops = []
     hole_loops = []
@@ -571,7 +828,14 @@ def generate_flaperon_segment(
         z_local = y_span - y_start
         chord, le_x = wing_chord_and_le_at_span(y_span)
         t_ratio = wing_thickness_ratio_at_span(y_span)
-        te_x = le_x + chord
+
+        x_end_flap = 1.0
+        if y_span <= 415.0:
+            x_start_flap = 0.804
+        else:
+            wf = min(1.0, (y_span - 415.0) / 14.0)
+            x_start_flap = 0.804 + 0.146 * wf
+        te_x = le_x + x_end_flap * chord
 
         loop = get_airfoil_loop(
             chord=chord,
@@ -579,24 +843,25 @@ def generate_flaperon_segment(
             y_offset=0.0,
             t_ratio=t_ratio,
             camber=0.018,
-            x_start_frac=0.755,
-            x_end_frac=1.0,
+            x_start_frac=x_start_flap,
+            x_end_frac=x_end_flap,
             n_pts=44,
             te_min_mm=0.85,
         )
         if not is_right_wing:
             loop = [(px, -py) for (px, py) in reversed(loop)]
 
-        # Posição da vareta antitorção Ø2mm proporcional (78.5% da corda = linha 100% reta!)
-        torsion_x = le_x + 0.785 * chord
-        yu_f, yl_f = airfoil_synerj_dlg(0.785, t_ratio=t_ratio, m=0.018)
+        # Pino auxiliar interno de união/antitorção da lâmina traseira (83.0% da corda)
+        torsion_frac = min(0.93, x_start_flap + 0.024)
+        torsion_x = le_x + torsion_frac * chord
+        yu_f, yl_f = airfoil_synerj_dlg(torsion_frac, t_ratio=t_ratio, m=0.018)
         f_cy = 0.5 * (yu_f + yl_f) * chord * (1.0 if is_right_wing else -1.0)
-        hole_torsion = get_circle_loop(torsion_x, f_cy, 1.05, n_pts=32)
+        hole_torsion = get_circle_loop(torsion_x, f_cy, 0.72 if y_span <= 415.0 else 0.40, n_pts=32)
 
-        f_start = torsion_x + 2.0
-        f_end = max(f_start + 4.5, te_x - 3.2)
+        f_start = torsion_x + (1.2 if y_span <= 415.0 else 0.6)
+        f_end = max(f_start + 1.2, te_x - 1.5)
         diag_wave = triangle_wave(2.0 * math.pi * y_span / 28.0)
-        f_rib_x = 0.5 * (f_start + f_end) + 0.24 * (f_end - f_start) * diag_wave
+        f_rib_x = 0.5 * (f_start + f_end) + 0.18 * (f_end - f_start) * diag_wave
 
         bay_f1 = get_airfoil_hollow_bay_loop(
             f_start, f_rib_x - 0.5 * rib_thick, chord, le_x, t_ratio, 0.018, skin_wall, is_right_wing, n_seg=8
@@ -609,7 +874,41 @@ def generate_flaperon_segment(
         outer_loops.append(loop)
         hole_loops.append([hole_torsion, bay_f1, bay_f2])
 
-    return loft_with_holes(outer_loops, hole_loops, z_slices)
+    tris = loft_with_holes(outer_loops, hole_loops, z_slices)
+
+    # Adiciona os Olhais Frontais Intercalados da Dobradiça do Flaperon (74.6%..81.2% da corda, eixo em 77.0%):
+    if y_start < 100.0:
+        # Flaperon_Inner (20..245mm): encaixa entre os Olhais 1, 2 e 3 de W1!
+        flap_barrels = [
+            (20.0, 112.0, False, True),    # Barrel 1 (da base Z=0 até antes do Olhal Central de W1 em 114..134mm)
+            (136.0, 227.0, True, True),    # Barrel 2 (entre o Olhal Central 134mm e o Olhal de Junção 229mm)
+        ]
+    else:
+        # Flaperon_Outer (245..429mm): encaixa entre os Olhais 4, 5 e 6 de W2!
+        flap_barrels = [
+            (263.0, 324.0, True, True),    # Barrel 3 (entre o Olhal da Base de W2 261mm e o Olhal Central 326mm)
+            (348.0, 407.0, True, True),    # Barrel 4 (entre o Olhal Central de W2 346mm e o Olhal da Ponta 409mm)
+        ]
+
+    for by0, by1, bev_b, bev_t in flap_barrels:
+        tris.extend(
+            generate_wing_hinge_knuckle(
+                y0=by0,
+                y1=by1,
+                y_start_seg=y_start,
+                is_right_wing=is_right_wing,
+                x_start_frac=0.746,
+                x_end_frac=0.812,
+                pin_frac=0.770,
+                pin_radius=1.08,
+                bevel_bottom=bev_b,
+                bevel_top=bev_t,
+                anchor_at_front=False,
+                n_slices=20,
+            )
+        )
+
+    return tris
 
 
 # ==============================================================================
@@ -618,17 +917,113 @@ def generate_flaperon_segment(
 
 def tail_chord_and_le(z_pos: float, span: float, root_chord: float, tip_chord: float, spar_x_mm: float) -> Tuple[float, float]:
     """
-    Geometria trapezoidal da empenagem X-Tail alinhada pelo eixo da vareta reta de carbono Ø2mm:
+    Geometria elíptico-trapezoidal C1-contínua da empenagem X-Tail com Pontas Arredondadas (estilo FlightPoint Luft):
     - Na base Z=0 (raiz na mesa de impressão): corda = root_chord (75mm), LE = 0.0mm
-    - No topo Z=span (ponta do estabilizador): corda = tip_chord (50mm horiz / 42mm vert)
-    - O eixo da vareta de carbono (spar_x_mm = 22.0mm = 29.33% da corda) fica SEMPRE no ponto de
-      maior espessura do perfil HT12/HT14 da base até a ponta, eliminando overhangs e rasgos no BA!
+    - Até Z = span - 24mm: afilamento linear suave em direção a tip_chord
+    - Nos últimos 24mm (Z = span - 24mm até span): curva radical C1-contínua `c1 + sqrt(1-w)*(A + B*w)`
+      que casa exatamente a derivada linear e arredonda a ponta sem nenhuma quina!
     """
-    u = max(0.0, min(1.0, z_pos / max(1.0, span)))
-    chord = root_chord - (root_chord - tip_chord) * u
+    tip_zone = 24.0
+    z_lin = max(1.0, span - tip_zone)
+    slope = -(root_chord - tip_chord) / span
+    c0 = root_chord + slope * z_lin
+    if z_pos <= z_lin:
+        chord = root_chord + slope * max(0.0, z_pos)
+    else:
+        w = min(1.0, (z_pos - z_lin) / tip_zone)
+        c1 = 14.0
+        A = c0 - c1
+        s0 = slope * tip_zone
+        B = s0 + 0.5 * A
+        chord = c1 + math.sqrt(max(0.04, 1.0 - w)) * (A + B * w)
     spar_frac = spar_x_mm / root_chord
     le_x = spar_x_mm - spar_frac * chord
     return chord, le_x
+
+
+def generate_tail_hinge_knuckle(
+    z0: float,
+    z1: float,
+    span: float,
+    root_chord: float,
+    tip_chord: float,
+    t_ratio_root: float,
+    t_ratio_tip: float,
+    main_spar_x: float,
+    x_start_frac: float,
+    x_end_frac: float,
+    pin_frac: float,
+    pin_radius: float,
+    bevel_bottom: bool,
+    bevel_top: bool,
+    anchor_at_front: bool,
+    n_slices: int = 12,
+) -> List[Triangle]:
+    """
+    Gera um Olhal de Dobradiça (Knuckle a 45°) para o Estabilizador Horizontal / Profundor (Elevator)
+    e para a Deriva Vertical / Leme (Rudder) da cauda X-Tail:
+    - Possui chanfros de 45° auto-suportados na impressão vertical (zero suporte!) e furo coaxial
+      para o pino-eixo da dobradiça (vareta de carbono Ø1.5mm ou aço Ø1.2mm).
+    """
+    outer_loops_3d: List[List[Point3D]] = []
+    hole_loops_3d: List[List[Point3D]] = []
+
+    for s in range(n_slices):
+        v = s / (n_slices - 1)
+        z_base = z0 + v * (z1 - z0)
+        u_span = z_base / max(1.0, span)
+        chord, le_x = tail_chord_and_le(z_base, span, root_chord, tip_chord, main_spar_x)
+        t_ratio = t_ratio_root + (t_ratio_tip - t_ratio_root) * u_span
+        x_anchor = le_x + (x_start_frac if anchor_at_front else x_end_frac) * chord
+
+        loop_2d = get_airfoil_loop(
+            chord=chord,
+            x_offset=le_x,
+            y_offset=0.0,
+            t_ratio=t_ratio,
+            camber=0.0,
+            x_start_frac=x_start_frac,
+            x_end_frac=x_end_frac,
+            n_pts=32,
+            te_min_mm=0.90,
+        )
+        pin_x = le_x + pin_frac * chord
+        hole_2d = get_circle_loop(pin_x, 0.0, pin_radius, n_pts=32)
+
+        def map_pt_3d(px: float, py: float) -> Point3D:
+            d_anc = abs(px - x_anchor)
+            zb = z0 + (0.72 * d_anc if bevel_bottom else 0.0)
+            zt = z1 - (0.72 * d_anc if bevel_top else 0.0)
+            if zt < zb + 0.35:
+                zm = 0.5 * (zb + zt)
+                zb, zt = zm - 0.18, zm + 0.18
+            return (px, py, zb + v * (zt - zb))
+
+        outer_loops_3d.append([map_pt_3d(px, py) for (px, py) in loop_2d])
+        hole_loops_3d.append([map_pt_3d(px, py) for (px, py) in hole_2d])
+
+    tris: List[Triangle] = []
+    m_pts = len(outer_loops_3d[0])
+    h_pts = len(hole_loops_3d[0])
+
+    for s in range(n_slices - 1):
+        o0, o1 = outer_loops_3d[s], outer_loops_3d[s + 1]
+        h0, h1 = hole_loops_3d[s], hole_loops_3d[s + 1]
+        for i in range(m_pts):
+            ni = (i + 1) % m_pts
+            tris.extend(quad_to_tris(o0[i], o0[ni], o1[ni], o1[i], flip=False))
+        for i in range(h_pts):
+            ni = (i + 1) % h_pts
+            tris.extend(quad_to_tris(h0[i], h0[ni], h1[ni], h1[i], flip=True))
+
+    for cap_idx, flip_cap in [(0, True), (n_slices - 1, False)]:
+        oc = outer_loops_3d[cap_idx]
+        hc = hole_loops_3d[cap_idx]
+        for i in range(m_pts):
+            ni = (i + 1) % m_pts
+            tris.extend(quad_to_tris(oc[i], oc[ni], hc[ni % h_pts], hc[i % h_pts], flip=flip_cap))
+
+    return tris
 
 
 def generate_xtail_half_surface(
@@ -643,10 +1038,11 @@ def generate_xtail_half_surface(
     n_slices: int = 44,
 ) -> List[Triangle]:
     """
-    Gera uma semi-superfície da empenagem X-Tail (impressa em pé na Bambu Lab P2S com a raiz
-    larga de 75mm na mesa Z=0 afilando até a ponta em Z=span, ZERO overhang!):
-    - Possui túnel contínuo p/ vareta reta de carbono Ø2.0mm (na parte fixa) ou Ø1.0mm (no profundor/leme)
-    - Possui câmaras ocas com nervura geodésica diagonal a 45° modelada no CAD (0% Infill)
+    Gera uma semi-superfície da empenagem X-Tail com Sistema de Dobradiça Mecânica Intertravada (Pin-Hinge):
+    - Parte fixa (Estabilizador Horizontal / Deriva Vertical): possui 3 Olhais Machos de Dobradiça
+      (Raiz, Centro e Ponta) com chanfros a 45° e furo coaxial p/ pino de carbono/aço Ø1.5mm.
+    - Parte móvel (Profundor / Leme): possui lâmina traseira contínua + 2 Barrels de Dobradiça Frontais
+      que se encaixam perfeitamente nos vãos entre os 3 olhais da parte fixa (zero cola na dobradiça!).
     """
     z_slices = []
     outer_loops = []
@@ -655,11 +1051,19 @@ def generate_xtail_half_surface(
     rib_thick = 0.82
     main_spar_x = 22.0  # 29.33% da corda de 75mm (ponto de espessura máxima do perfil HT12/HT14)
 
+    # Fração da corda onde passa a linha reta do pino da dobradiça (65.5% p/ Horiz, 61.5% p/ Vert)
+    hinge_pin_frac = (x_end_frac + 0.015) if not is_control_surface else (x_start_frac + 0.005)
+    hinge_pin_r = 0.72
+
     for s in range(n_slices):
         v = s / (n_slices - 1)
         z_pos = v * span
         chord, le_x = tail_chord_and_le(z_pos, span, root_chord, tip_chord, main_spar_x)
         t_ratio = t_ratio_root + (t_ratio_tip - t_ratio_root) * v
+
+        # Na parte móvel (Elevator / Rudder), a lâmina principal começa logo atrás dos olhais (x_start_frac + 0.046)
+        eff_x_start = (x_start_frac + 0.046) if is_control_surface else x_start_frac
+        eff_x_end = (x_end_frac - 0.010) if not is_control_surface else x_end_frac
 
         loop = get_airfoil_loop(
             chord=chord,
@@ -667,8 +1071,8 @@ def generate_xtail_half_surface(
             y_offset=0.0,
             t_ratio=t_ratio,
             camber=0.0,
-            x_start_frac=x_start_frac,
-            x_end_frac=x_end_frac,
+            x_start_frac=eff_x_start,
+            x_end_frac=eff_x_end,
             n_pts=40,
             te_min_mm=0.80,
         )
@@ -676,21 +1080,17 @@ def generate_xtail_half_surface(
         diag_wave = triangle_wave(2.0 * math.pi * z_pos / 26.0)
 
         if not is_control_surface:
-            # Parte fixa (0% a 63% da corda):
-            # - Vareta reta de carbono Ø2.0mm sempre em X = 22.0mm (29.33% da corda local!)
             spar_r = 1.08
             hole_spar = get_circle_loop(main_spar_x, 0.0, spar_r, n_pts=32)
 
-            # Câmara oca frontal (D-Box do estabilizador, entre 4.5% da corda e a vareta Ø2mm)
             f_start = le_x + 0.045 * chord
             f_end = main_spar_x - spar_r - 0.9
             bay_front = get_airfoil_hollow_bay_loop(
                 f_start, f_end, chord, le_x, t_ratio, 0.0, skin_wall, True, n_seg=8
             )
 
-            # 2 Câmaras ocas traseiras separadas por nervura diagonal geodésica a 45°
             r_start = main_spar_x + spar_r + 0.9
-            r_end = le_x + (x_end_frac - 0.025) * chord
+            r_end = le_x + (eff_x_end - 0.025) * chord
             r_span = r_end - r_start
             r_rib = r_start + 0.50 * r_span + 0.22 * r_span * diag_wave
             bay_rear1 = get_airfoil_hollow_bay_loop(
@@ -701,12 +1101,10 @@ def generate_xtail_half_surface(
             )
             holes_this_slice = [bay_front, hole_spar, bay_rear1, bay_rear2]
         else:
-            # Parte móvel (Profundor / Leme: 64% a 100% da corda):
-            # - Furo p/ vareta de reforço de carbono Ø1.0mm em 68.5% da corda + câmara oca traseira
-            ctrl_spar_x = le_x + 0.685 * chord
-            hole_spar = get_circle_loop(ctrl_spar_x, 0.0, 0.62, n_pts=28)
-            c_start = ctrl_spar_x + 1.4
-            c_end = le_x + 0.94 * chord
+            ctrl_spar_x = le_x + (eff_x_start + 0.032) * chord
+            hole_spar = get_circle_loop(ctrl_spar_x, 0.0, 0.55, n_pts=28)
+            c_start = ctrl_spar_x + 1.2
+            c_end = max(c_start + 1.0, le_x + 0.94 * chord)
             bay_ctrl = get_airfoil_hollow_bay_loop(
                 c_start, c_end, chord, le_x, t_ratio, 0.0, skin_wall, True, n_seg=8
             )
@@ -716,7 +1114,69 @@ def generate_xtail_half_surface(
         outer_loops.append(loop)
         hole_loops.append(holes_this_slice)
 
-    return loft_with_holes(outer_loops, hole_loops, z_slices)
+    tris = loft_with_holes(outer_loops, hole_loops, z_slices)
+
+    # Adiciona os Olhais Intercalados da Dobradiça (Knuckles a 45°) no Estabilizador/Deriva e no Profundor/Leme:
+    z_k1_end = 11.0
+    z_k2_start = 0.43 * span
+    z_k2_end = 0.57 * span
+    z_k3_start = span - 14.0
+
+    if not is_control_surface:
+        # 3 Olhais Machos na Parte Fixa (Estabilizador Horizontal e Deriva Vertical)
+        tail_knuckles = [
+            (0.0, z_k1_end, False, True),
+            (z_k2_start, z_k2_end, True, True),
+            (z_k3_start, span - 2.0, True, True),
+        ]
+        for kz0, kz1, bb, bt in tail_knuckles:
+            tris.extend(
+                generate_tail_hinge_knuckle(
+                    z0=kz0,
+                    z1=kz1,
+                    span=span,
+                    root_chord=root_chord,
+                    tip_chord=tip_chord,
+                    t_ratio_root=t_ratio_root,
+                    t_ratio_tip=t_ratio_tip,
+                    main_spar_x=main_spar_x,
+                    x_start_frac=x_end_frac - 0.018,
+                    x_end_frac=hinge_pin_frac + 0.036,
+                    pin_frac=hinge_pin_frac,
+                    pin_radius=hinge_pin_r,
+                    bevel_bottom=bb,
+                    bevel_top=bt,
+                    anchor_at_front=True,
+                )
+            )
+    else:
+        # 2 Olhais/Barrels Frontais na Parte Móvel (Profundor / Elevator e Leme / Rudder) encaixando entre os 3 olhais fixos!
+        ctrl_barrels = [
+            (z_k1_end + 1.5, z_k2_start - 1.5, True, True),
+            (z_k2_end + 1.5, z_k3_start - 1.5, True, True),
+        ]
+        for bz0, bz1, bb, bt in ctrl_barrels:
+            tris.extend(
+                generate_tail_hinge_knuckle(
+                    z0=bz0,
+                    z1=bz1,
+                    span=span,
+                    root_chord=root_chord,
+                    tip_chord=tip_chord,
+                    t_ratio_root=t_ratio_root,
+                    t_ratio_tip=t_ratio_tip,
+                    main_spar_x=main_spar_x,
+                    x_start_frac=hinge_pin_frac - 0.030,
+                    x_end_frac=x_start_frac + 0.054,
+                    pin_frac=hinge_pin_frac,
+                    pin_radius=hinge_pin_r,
+                    bevel_bottom=bb,
+                    bevel_top=bt,
+                    anchor_at_front=False,
+                )
+            )
+
+    return tris
 
 
 def offset_triangles(tris: List[Triangle], dx: float, dy: float, dz: float) -> List[Triangle]:
@@ -1132,6 +1592,23 @@ def generate_flaperon_root_horns() -> List[Triangle]:
     return tris
 
 
+def generate_launch_peg_bushing_4mm() -> List[Triangle]:
+    """
+    Bucha/Luva Estrutural Ambidestra em PETG (Plate 3) para o Pino de Lançamento (Launch Peg Ø4mm):
+    - Pode ser instalada TANTO na Ponta da Asa Esquerda (pilotos Destros) QUANTO na Ponta da Asa Direita (pilotos Canhotos)!
+    - Possui flange oblonga de distribuição de carga (18mm x 10mm) que abraça a ponta da longarina Ø6mm
+      em Y = ±450mm (X = 75.0mm) e furo central vertical Ø4.12mm para colagem do pino de carbono Ø4mm x 50mm.
+    """
+    flange = generate_box_with_holes(
+        width_x=18.0,
+        length_y=10.0,
+        height_z=2.4,
+        holes_xy=[(0.0, 0.0, 2.06)],
+    )
+    boss = generate_cylinder_z(cx=0.0, cy=0.0, r_outer=3.6, r_inner=2.06, z0=0.0, z1=6.5)
+    return flange + boss
+
+
 # ==============================================================================
 # 7. GERADOR DE BLUEPRINTS TÉCNICOS VETORIAIS (SVG + DXF EM ESCALA 1:1)
 # ==============================================================================
@@ -1142,44 +1619,47 @@ def export_engineering_blueprints_svg_dxf(base_dir: str) -> None:
     svg_path = os.path.join(bp_dir, "DLG_Mini_950_Blueprint_Full.svg")
     dxf_path = os.path.join(bp_dir, "DLG_Mini_950_CAD_1to1.dxf")
 
-    span_samples = [i * 5.0 for i in range(96)]
+    span_samples = [i * 5.0 for i in range(86)] + [430.0 + i * 1.5 for i in range(31)]
     le_pts_right = []
     te_pts_right = []
     hinge_pts_right = []
     for y in span_samples:
         c, lex = wing_chord_and_le_at_span(y)
         le_pts_right.append((lex, y))
-        hinge_pts_right.append((lex + 0.75 * c, y))
         te_pts_right.append((lex + c, y))
+        if y <= 415.0:
+            hinge_pts_right.append((lex + 0.745 * c, y))
 
     geodesic_lines = []
-    for y in range(0, 470, 2):
+    for y in range(0, 448, 2):
         y0 = float(y)
         y1 = float(y + 2)
         c0, lex0 = wing_chord_and_le_at_span(y0)
         c1, lex1 = wing_chord_and_le_at_span(y1)
+        sp0, ax0 = wing_spar_and_aux_x(y0)
+        sp1, ax1 = wing_spar_and_aux_x(y1)
         w0 = triangle_wave(2.0 * math.pi * y0 / 36.0)
         w1 = triangle_wave(2.0 * math.pi * y1 / 36.0)
         # Nervura D-box proporcional
-        db0_s, db0_e = lex0 + 0.04 * c0, 49.0 - 4.3
-        db1_s, db1_e = lex1 + 0.04 * c1, 49.0 - 4.3
-        db0 = 0.5 * (db0_s + db0_e) + 0.28 * (db0_e - db0_s) * w0
-        db1 = 0.5 * (db1_s + db1_e) + 0.28 * (db1_e - db1_s) * w1
+        db0_s, db0_e = lex0 + max(2.6, 0.045 * c0), sp0 - 4.3
+        db1_s, db1_e = lex1 + max(2.6, 0.045 * c1), sp1 - 4.3
+        db0 = 0.5 * (db0_s + db0_e) + 0.24 * (db0_e - db0_s) * w0
+        db1 = 0.5 * (db1_s + db1_e) + 0.24 * (db1_e - db1_s) * w1
         geodesic_lines.append(((db0, y0), (db1, y1)))
-        # Nervuras caixa central proporcionais (entre X=53.3mm e 64.5% da corda)
-        m0_s, m0_e = 53.3, lex0 + 0.645 * c0 - 2.2
-        m1_s, m1_e = 53.3, lex1 + 0.645 * c1 - 2.2
+        # Nervuras caixa central proporcionais (entre sp+4.3mm e ax-2.0mm)
+        m0_s, m0_e = sp0 + 4.3, ax0 - 2.0
+        m1_s, m1_e = sp1 + 4.3, ax1 - 2.0
         mw0 = m0_e - m0_s
         mw1 = m1_e - m1_s
-        geodesic_lines.append(((m0_s + 0.33 * mw0 + 0.11 * mw0 * w0, y0), (m1_s + 0.33 * mw1 + 0.11 * mw1 * w1, y1)))
-        geodesic_lines.append(((m0_s + 0.67 * mw0 - 0.11 * mw0 * w0, y0), (m1_s + 0.67 * mw1 - 0.11 * mw1 * w1, y1)))
-        if 20 <= y <= 453:
+        geodesic_lines.append(((m0_s + 0.33 * mw0 + 0.10 * mw0 * w0, y0), (m1_s + 0.33 * mw1 + 0.10 * mw1 * w1, y1)))
+        geodesic_lines.append(((m0_s + 0.67 * mw0 - 0.10 * mw0 * w0, y0), (m1_s + 0.67 * mw1 - 0.10 * mw1 * w1, y1)))
+        if 20 <= y <= 412:
             fw0 = triangle_wave(2.0 * math.pi * y0 / 28.0)
             fw1 = triangle_wave(2.0 * math.pi * y1 / 28.0)
-            f0_s, f0_e = lex0 + 0.785 * c0 + 2.0, lex0 + c0 - 3.2
-            f1_s, f1_e = lex1 + 0.785 * c1 + 2.0, lex1 + c1 - 3.2
-            f0 = 0.5 * (f0_s + f0_e) + 0.24 * (f0_e - f0_s) * fw0
-            f1 = 0.5 * (f1_s + f1_e) + 0.24 * (f1_e - f1_s) * fw1
+            f0_s, f0_e = lex0 + 0.785 * c0 + 1.8, lex0 + c0 - 2.8
+            f1_s, f1_e = lex1 + 0.785 * c1 + 1.8, lex1 + c1 - 2.8
+            f0 = 0.5 * (f0_s + f0_e) + 0.22 * (f0_e - f0_s) * fw0
+            f1 = 0.5 * (f1_s + f1_e) + 0.22 * (f1_e - f1_s) * fw1
             geodesic_lines.append(((f0, y0), (f1, y1)))
 
     svg_lines = [
@@ -1261,32 +1741,39 @@ def export_engineering_blueprints_svg_dxf(base_dir: str) -> None:
         p1_r = map_top(x1, y1)
         svg_lines.append(svg_line_poly(p0_r[0], p0_r[1], p1_r[0], p1_r[1], 1.1, "#2c6cb0"))
 
-    # Longarinas e Baionetas de Carbono na Asa
-    for x_spar, span_lim, col, w_stroke in [
-        (38.5, 55.0, "#ff6b6b", 4.2),   # Baioneta Reta de Diedro Ø4mm x 110mm (-5.0° no plano YZ)
-        (49.0, 455.0, "#ffd166", 4.6),  # Longarina Principal Tubo Ø6x4mm
-        (98.0, 350.0, "#06d6a0", 2.6),  # Longarina Auxiliar Vareta Ø2mm
-        (116.0, 450.0, "#ff9f1c", 2.4), # Vareta Antitorção do Flaperon Ø2mm
+    # Longarinas e Baionetas Retilíneas de Carbono na Asa
+    for x_root, x_tip, span_lim, col, w_stroke in [
+        (38.5, 38.5, 55.0, "#ff6b6b", 4.2),   # Baioneta Reta de Diedro Ø4mm x 110mm (-5.0° no plano YZ)
+        (49.0, 76.0, 450.0, "#ffd166", 4.6),  # Longarina Principal Tubo Ø6x4mm (linha reta)
+        (96.8, 98.0, 450.0, "#06d6a0", 2.6),  # Longarina Auxiliar Vareta Ø2mm (linha reta)
+        (116.0, 109.5, 414.0, "#ff9f1c", 2.4), # Vareta Antitorção do Flaperon Ø2mm (linha reta)
     ]:
-        pL = map_top(x_spar, -span_lim)
-        pR = map_top(x_spar, span_lim)
-        svg_lines.append(svg_line_poly(pL[0], pL[1], pR[0], pR[1], w_stroke, col))
+        pL = map_top(x_tip, -span_lim)
+        pC = map_top(x_root, 0.0)
+        pR = map_top(x_tip, span_lim)
+        svg_lines.append(svg_line_poly(pL[0], pL[1], pC[0], pC[1], w_stroke, col))
+        svg_lines.append(svg_line_poly(pC[0], pC[1], pR[0], pR[1], w_stroke, col))
 
-    # Linha de Dobradiça dos Flaperons (X = 112.5mm)
-    hL = map_top(112.5, -455.0)
-    hR = map_top(112.5, 455.0)
-    svg_lines.append(svg_line_poly(hL[0], hL[1], hR[0], hR[1], 1.6, "#ffffff"))
+    # Linha de Dobradiça dos Flaperons (reta de 111.75mm na raiz até 107.2mm em y=414mm)
+    hL = map_top(107.2, -414.0)
+    hC = map_top(111.75, 0.0)
+    hR = map_top(107.2, 414.0)
+    svg_lines.append(svg_line_poly(hL[0], hL[1], hC[0], hC[1], 1.6, "#ffffff"))
+    svg_lines.append(svg_line_poly(hC[0], hC[1], hR[0], hR[1], 1.6, "#ffffff"))
 
     # Linha de divisão W1 (245mm) / W2 (230mm) para a Bambu Lab P2S
     for side in (-1.0, 1.0):
-        p_div0 = map_top(8.0, side * 245.0)
-        p_div1 = map_top(152.0, side * 245.0)
+        p_div0 = map_top(26.4, side * 245.0)
+        p_div1 = map_top(136.6, side * 245.0)
         svg_lines.append(svg_line_poly(p_div0[0], p_div0[1], p_div1[0], p_div1[1], 2.8, "#ff6b6b"))
 
-    # Pino de Lançamento (Launch Peg Ø4mm na ponta esquerda)
-    peg0 = map_top(49.0, -445.0)
-    peg1 = map_top(49.0, -483.0)
-    svg_lines.append(svg_line_poly(peg0[0], peg0[1], peg1[0], peg1[1], 6.5, "#ff6b6b"))
+    # Pino de Lançamento Ambidestro (Launch Peg Ø4mm em X=75.0mm, Y=-450mm p/ Destros OU Y=+450mm p/ Canhotos)
+    pegL0 = map_top(75.0, -438.0)
+    pegL1 = map_top(75.0, -478.0)
+    svg_lines.append(svg_line_poly(pegL0[0], pegL0[1], pegL1[0], pegL1[1], 6.5, "#ff6b6b"))
+    pegR0 = map_top(75.0, 438.0)
+    pegR1 = map_top(75.0, 478.0)
+    svg_lines.append(svg_line_poly(pegR0[0], pegR0[1], pegR1[0], pegR1[1], 5.5, "#06d6a0"))
 
     # Estabilizador Horizontal X-Tail (Envergadura 240mm = ±120mm)
     ht_pts = [
@@ -1307,7 +1794,8 @@ def export_engineering_blueprints_svg_dxf(base_dir: str) -> None:
     ht_spar_R = map_top(458.0, 118.0)
     svg_lines.append(svg_line_poly(ht_spar_L[0], ht_spar_L[1], ht_spar_R[0], ht_spar_R[1], 2.4, "#06d6a0"))
 
-    svg_lines.append(f'<text x="{cx_top - 455:.1f}" y="{cy_top - 22:.1f}" fill="#ff6b6b" font-family="Monaco, monospace" font-size="13">LAUNCH PEG Ø4mm</text>')
+    svg_lines.append(f'<text x="{cx_top - 475:.1f}" y="{cy_top - 22:.1f}" fill="#ff6b6b" font-family="Monaco, monospace" font-size="12.5">PEG ESQ Ø4mm (DESTROS)</text>')
+    svg_lines.append(f'<text x="{cx_top + 305:.1f}" y="{cy_top - 22:.1f}" fill="#06d6a0" font-family="Monaco, monospace" font-size="12.5">OPÇÃO PEG DIR Ø4mm (CANHOTOS)</text>')
     svg_lines.append(f'<text x="{cx_top - 420:.1f}" y="{cy_top + 178:.1f}" fill="#5ce1e6" font-family="Monaco, monospace" font-size="13">NERVURAS GEODÉSICAS 45° (0.85mm NO CAD - 0% INFILL)</text>')
     svg_lines.append(f'<text x="{cx_top + 55:.1f}" y="{cy_top - 22:.1f}" fill="#ffd166" font-family="Monaco, monospace" font-size="13">TUBO Ø6x4mm (X=49mm) + BAIONETA DIEDRO 5° (X=38.5mm)</text>')
     svg_lines.append(f'<text x="{cx_top + 55:.1f}" y="{cy_top + 178:.1f}" fill="#ff9f1c" font-family="Monaco, monospace" font-size="13">VARETA ANTITORÇÃO Ø2mm NO FLAPERON (X=116mm)</text>')
@@ -1504,16 +1992,24 @@ def main() -> None:
     export_airfoil_dat_files(base_dir)
     export_engineering_blueprints_svg_dxf(base_dir)
 
-    print("2. Gerando Plate 1 — Asas c/ Nervuras Geodésicas 0% Infill + Túnel Angulado de Diedro 5.0°/lado...")
+    print("2. Gerando Plate 1 — Asas c/ Nervuras Geodésicas 0% Infill + Opção Ambidestra de Pino (Esq ou Dir)...")
+    w2_right_no_peg = generate_wing_segment(245.0, 475.0, is_right_wing=True, has_peg_socket=False)
+    w2_right_with_peg = generate_wing_segment(245.0, 475.0, is_right_wing=True, has_peg_socket=True)
+    w2_left_with_peg = generate_wing_segment(245.0, 475.0, is_right_wing=False, has_peg_socket=True)
+    w2_left_no_peg = generate_wing_segment(245.0, 475.0, is_right_wing=False, has_peg_socket=False)
+
     tasks_p1 = [
         ("W1_Right_Inner_Wing_245mm.stl", generate_wing_segment(0.0, 245.0, is_right_wing=True, has_peg_socket=False)),
         ("W1_Left_Inner_Wing_245mm.stl", generate_wing_segment(0.0, 245.0, is_right_wing=False, has_peg_socket=False)),
-        ("W2_Right_Outer_Wing_230mm.stl", generate_wing_segment(245.0, 475.0, is_right_wing=True, has_peg_socket=False)),
-        ("W2_Left_Outer_Wing_Peg_230mm.stl", generate_wing_segment(245.0, 475.0, is_right_wing=False, has_peg_socket=True)),
+        ("W2_Right_Outer_Wing_230mm.stl", w2_right_no_peg),
+        ("W2_Right_Outer_Wing_NoPeg_230mm.stl", w2_right_no_peg),
+        ("W2_Right_Outer_Wing_Peg_230mm.stl", w2_right_with_peg),
+        ("W2_Left_Outer_Wing_Peg_230mm.stl", w2_left_with_peg),
+        ("W2_Left_Outer_Wing_NoPeg_230mm.stl", w2_left_no_peg),
         ("Flaperon_Right_Inner_225mm.stl", generate_flaperon_segment(20.0, 245.0, is_right_wing=True)),
-        ("Flaperon_Right_Outer_210mm.stl", generate_flaperon_segment(245.0, 455.0, is_right_wing=True)),
+        ("Flaperon_Right_Outer_210mm.stl", generate_flaperon_segment(245.0, 429.0, is_right_wing=True)),
         ("Flaperon_Left_Inner_225mm.stl", generate_flaperon_segment(20.0, 245.0, is_right_wing=False)),
-        ("Flaperon_Left_Outer_210mm.stl", generate_flaperon_segment(245.0, 455.0, is_right_wing=False)),
+        ("Flaperon_Left_Outer_210mm.stl", generate_flaperon_segment(245.0, 429.0, is_right_wing=False)),
     ]
     for fname, tris in tasks_p1:
         out_path = os.path.join(p1_dir, fname)
@@ -1566,6 +2062,7 @@ def main() -> None:
         ("Dihedral_V_Joiner_10deg_PETG.stl", generate_dihedral_v_joiner_10deg()),
         ("XTail_Center_Clamp_8mm_Boom.stl", generate_xtail_center_clamp_8mm()),
         ("Flaperon_Root_Horns_BallLink_Pair.stl", generate_flaperon_root_horns()),
+        ("Launch_Peg_Socket_Bushing_4mm_PETG.stl", generate_launch_peg_bushing_4mm()),
     ]
     for fname, tris in tasks_p3:
         out_path = os.path.join(p3_dir, fname)

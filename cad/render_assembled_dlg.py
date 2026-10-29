@@ -173,9 +173,10 @@ def make_solid_wingtip_cap(is_right_wing: bool) -> List[Triangle]:
     return transform_wing_to_aircraft(raw, 475.0, is_right_wing)
 
 
-def build_assembled_dlg_components() -> List[Tuple[str, List[Triangle], ColorRGB]]:
+def build_assembled_dlg_components(peg_side: str = "left") -> List[Tuple[str, List[Triangle], ColorRGB]]:
     """
     Constrói todos os componentes 3D posicionados no espaço da aeronave com suas cores de renderização.
+    - `peg_side`: "left" (Pino na Asa Esquerda p/ Destros), "right" (Pino na Asa Direita p/ Canhotos), ou "both".
     Comprimento total: X = -100mm (Ponta do Bico) até X = +540mm (Bordo de fuga do Leme) = 640mm exatos!
     """
     components: List[Tuple[str, List[Triangle], ColorRGB]] = []
@@ -208,31 +209,42 @@ def build_assembled_dlg_components() -> List[Tuple[str, List[Triangle], ColorRGB
     components.append(("W1_Right_Inner", transform_wing_to_aircraft(w1_r_raw, 0.0, True), (225, 234, 246)))
     components.append(("W1_Left_Inner", transform_wing_to_aircraft(w1_l_raw, 0.0, False), (225, 234, 246)))
 
-    # 6. Painéis Externos da Asa W2 (245 a 475mm, Diedro 5.0°/lado) + Ponteiras Fechadas
-    w2_r_raw = cad.generate_wing_segment(245.0, 475.0, is_right_wing=True, has_peg_socket=False)
-    w2_l_raw = cad.generate_wing_segment(245.0, 475.0, is_right_wing=False, has_peg_socket=True)
-    components.append(("W2_Right_Outer", transform_wing_to_aircraft(w2_r_raw, 245.0, True) + make_solid_wingtip_cap(True), (190, 214, 244)))
-    components.append(("W2_Left_Outer", transform_wing_to_aircraft(w2_l_raw, 245.0, False) + make_solid_wingtip_cap(False), (190, 214, 244)))
+    # 6. Painéis Externos da Asa W2 (245 a 475mm, Diedro 5.0°/lado, com Ponta Elíptica Arredondada e opção ambidestra de Pino)
+    has_right_peg = peg_side in ("right", "both")
+    has_left_peg = peg_side in ("left", "both")
+    w2_r_raw = cad.generate_wing_segment(245.0, 475.0, is_right_wing=True, has_peg_socket=has_right_peg)
+    w2_l_raw = cad.generate_wing_segment(245.0, 475.0, is_right_wing=False, has_peg_socket=has_left_peg)
+    components.append(("W2_Right_Outer", transform_wing_to_aircraft(w2_r_raw, 245.0, True), (190, 214, 244)))
+    components.append(("W2_Left_Outer", transform_wing_to_aircraft(w2_l_raw, 245.0, False), (190, 214, 244)))
 
-    # 7. Flaperons Full-Span (Internos 20..245mm e Externos 245..455mm) - Destaque Laranja/Coral Competição
+    # 7. Flaperons (Internos 20..245mm e Externos 245..429mm, casando sem entalhe com a ponteira integral de W2)
     flap_ri = cad.generate_flaperon_segment(20.0, 245.0, is_right_wing=True)
-    flap_ro = cad.generate_flaperon_segment(245.0, 455.0, is_right_wing=True)
+    flap_ro = cad.generate_flaperon_segment(245.0, 429.0, is_right_wing=True)
     flap_li = cad.generate_flaperon_segment(20.0, 245.0, is_right_wing=False)
-    flap_lo = cad.generate_flaperon_segment(245.0, 455.0, is_right_wing=False)
+    flap_lo = cad.generate_flaperon_segment(245.0, 429.0, is_right_wing=False)
     components.append(("Flaperon_Right_Inner", transform_wing_to_aircraft(flap_ri, 20.0, True), (235, 94, 64)))
     components.append(("Flaperon_Right_Outer", transform_wing_to_aircraft(flap_ro, 245.0, True), (235, 94, 64)))
     components.append(("Flaperon_Left_Inner", transform_wing_to_aircraft(flap_li, 20.0, False), (235, 94, 64)))
     components.append(("Flaperon_Left_Outer", transform_wing_to_aircraft(flap_lo, 245.0, False), (235, 94, 64)))
 
-    # 8. Pino de Lançamento (Launch Peg) de Carbono Ø4mm x 50mm na Ponta da Asa Esquerda (Y = -460mm)
+    # 8. Pino de Lançamento (Launch Peg) Ambidestro de Carbono Ø4mm x 50mm (Esquerda p/ Destros OU Direita p/ Canhotos!)
     dih = math.radians(cad.DIHEDRAL_DEG)
-    s_peg = 460.0
-    y_peg_c = -s_peg * math.cos(dih)
-    z_peg_c = 9.2 + s_peg * math.sin(dih)
-    peg_p0 = (49.0, y_peg_c - 22.0 * math.sin(dih), z_peg_c - 22.0 * math.cos(dih))
-    peg_p1 = (49.0, y_peg_c + 28.0 * math.sin(dih), z_peg_c + 28.0 * math.cos(dih))
-    peg_tris = make_cylinder_along_axis(peg_p0, peg_p1, radius=2.1, n_seg=24)
-    components.append(("Carbon_Launch_Peg_4mm", peg_tris, (255, 205, 56)))
+    s_peg = 450.0
+    if has_left_peg:
+        y_peg_l = -s_peg * math.cos(dih)
+        z_peg_l = 9.2 + s_peg * math.sin(dih)
+        peg_l0 = (75.0, y_peg_l - 22.0 * math.sin(dih), z_peg_l - 22.0 * math.cos(dih))
+        peg_l1 = (75.0, y_peg_l + 28.0 * math.sin(dih), z_peg_l + 28.0 * math.cos(dih))
+        peg_l_tris = make_cylinder_along_axis(peg_l0, peg_l1, radius=2.1, n_seg=24)
+        components.append(("Carbon_Launch_Peg_4mm", peg_l_tris, (255, 205, 56)))
+
+    if has_right_peg:
+        y_peg_r = s_peg * math.cos(dih)
+        z_peg_r = 9.2 + s_peg * math.sin(dih)
+        peg_r0 = (75.0, y_peg_r + 22.0 * math.sin(dih), z_peg_r - 22.0 * math.cos(dih))
+        peg_r1 = (75.0, y_peg_r - 28.0 * math.sin(dih), z_peg_r + 28.0 * math.cos(dih))
+        peg_r_tris = make_cylinder_along_axis(peg_r0, peg_r1, radius=2.1, n_seg=24)
+        components.append(("Carbon_Launch_Peg_Right_4mm", peg_r_tris, (16, 232, 168)))
 
     # 9. Empenagem Horizontal X-Tail (Estabilizador Fixo 240mm + Profundor 240mm)
     ht_half = cad.generate_xtail_half_surface(120.0, 75.0, 48.0, 0.068, 0.080, 0.0, 0.64, is_control_surface=False)
@@ -266,13 +278,10 @@ def render_view_panel(
     pan_x: float = 0.0,
     pan_y: float = 0.0,
     bg_color: Tuple[int, int, int] = (15, 28, 48),
+    center_pt: Point3D = (165.0, 0.0, 15.0),
 ) -> Image.Image:
     """
     Renderiza os componentes 3D com supersampling 2x, algoritmo do pintor (Z-sort) e iluminação Studio Phong.
-    Coordenadas da aeronave:
-    - X_ac: Longitudinal (-135 bico .. +505 cauda), centro em X_c = 175mm
-    - Y_ac: Envergadura (-475 esq .. +475 dir), centro em Y_c = 0mm
-    - Z_ac: Vertical (-70 .. +105mm), centro em Z_c = 18mm
     """
     ss = 2
     W, H = width * ss, height * ss
@@ -293,7 +302,7 @@ def render_view_panel(
     cp, sp = math.cos(pitch), math.sin(pitch)
     cr, sr = math.cos(roll), math.sin(roll)
 
-    xc, yc, zc = 165.0, 0.0, 15.0
+    xc, yc, zc = center_pt
 
     def project_pt(p: Point3D) -> Tuple[float, float, float]:
         # Centraliza aeronave
@@ -375,14 +384,19 @@ def main() -> None:
     bp_dir = os.path.join(base_dir, "blueprints")
     os.makedirs(bp_dir, exist_ok=True)
 
-    print("1. Construindo montagem 3D completa do DLG-Mini 950 3DP...")
-    components = build_assembled_dlg_components()
-    all_tris: List[Triangle] = []
-    for name, tris, _ in components:
-        all_tris.extend(tris)
+    print("1. Construindo montagem 3D completa do DLG-Mini 950 3DP (Opcao Destro e Opcao Canhoto)...")
+    components = build_assembled_dlg_components(peg_side="both")
+    components_left = build_assembled_dlg_components(peg_side="left")
+    components_right = build_assembled_dlg_components(peg_side="right")
 
-    cad.write_binary_stl(stl_out, all_tris, "DLG-Mini 950 3DP Full Assembly")
-    print(f"   -> STL Montado salvo em: {stl_out} ({len(all_tris)} triangulos)")
+    all_tris_left: List[Triangle] = [t for _, tris, _ in components_left for t in tris]
+    all_tris_right: List[Triangle] = [t for _, tris, _ in components_right for t in tris]
+
+    stl_out_right = os.path.join(base_dir, "stl", "DLG_Mini_950_Full_Assembly_RightPeg.stl")
+    cad.write_binary_stl(stl_out, all_tris_left, "DLG-Mini 950 3DP Full Assembly (Left Peg - Right Handed)")
+    cad.write_binary_stl(stl_out_right, all_tris_right, "DLG-Mini 950 3DP Full Assembly (Right Peg - Left Handed)")
+    print(f"   -> STL Montado (Destro - Pino Esq): {stl_out} ({len(all_tris_left)} triangulos)")
+    print(f"   -> STL Montado (Canhoto - Pino Dir): {stl_out_right} ({len(all_tris_right)} triangulos)")
 
     print("2. Renderizando Studio 3D Multi-Vista em alta resolucao...")
     W_tot, H_tot = 1800, 1250
@@ -459,7 +473,7 @@ def main() -> None:
     )
     draw.text(
         (36, 1202),
-        "Pino de Lançamento Ø4mm na ponta da asa esquerda (destros) + Estabilidade espiral autônoma em térmicas",
+        "Pino Ø4mm Ambidestro: Asa Esquerda [Amarelo - Destros] OU Asa Direita [Verde - Canhotos] + Diedro 5°/lado",
         fill=(190, 220, 255),
         font=font_lbl,
     )
@@ -487,7 +501,156 @@ def main() -> None:
     jpg_path = os.path.join(bp_dir, "DLG_Mini_950_3D_Assembly_Render.jpg")
     canvas.save(png_path, "PNG")
     canvas.save(jpg_path, "JPEG", quality=96)
-    print(f"   -> Renders salvos em:\n      {png_path}\n      {jpg_path}")
+
+    # Renderiza Painel Triplo Estilo "FlightPoint Luft CAD" em DLG_Mini_950_Rounded_Wingtip_Detail.jpg:
+    # - Painel 1 (Esquerda Grande): Aeronave Completa estilo FlightPoint Luft (Asas em Azul CAD com corte interno
+    #   revelando nervuras geodésicas + longarinas de carbono pretas + Pod Dourado/Champagne)
+    # - Painel 2 (Superior Direito): Close-up 3D da Ponta da Asa Arredondada (Exterior - Zero degrau no bordo de fuga!)
+    # - Painel 3 (Inferior Direito): Close-up 3D em Corte Interno (Nervuras Geodésicas + Tubo Ø6mm + Pino Ø4mm)
+    dih = math.radians(cad.DIHEDRAL_DEG)
+    sp_l0 = (49.0, 0.0, 9.2)
+    sp_l1 = (76.0, -450.0 * math.cos(dih), 9.2 + 450.0 * math.sin(dih))
+    sp_r0 = (49.0, 0.0, 9.2)
+    sp_r1 = (76.0, 450.0 * math.cos(dih), 9.2 + 450.0 * math.sin(dih))
+    spar_cyl_l = make_cylinder_along_axis(sp_l0, sp_l1, 2.7, 20, 24)
+    spar_cyl_r = make_cylinder_along_axis(sp_r0, sp_r1, 2.7, 20, 24)
+
+    aux_l0 = (96.8, 0.0, 9.2)
+    aux_l1 = (96.8, -450.0 * math.cos(dih), 9.2 + 450.0 * math.sin(dih))
+    aux_cyl_l = make_cylinder_along_axis(aux_l0, aux_l1, 1.1, 16, 20)
+
+    # Pinos-Eixo Retilíneos das Dobradiças Mecânicas Intercaladas (Hinge Pins Ø2.0mm nas Asas/Flaperons)
+    hp_l0 = (115.5, 0.0, 9.2)
+    hp_l1 = (109.5, -425.0 * math.cos(dih), 9.2 + 425.0 * math.sin(dih))
+    hp_r0 = (115.5, 0.0, 9.2)
+    hp_r1 = (109.5, 425.0 * math.cos(dih), 9.2 + 425.0 * math.sin(dih))
+    hinge_pin_wing_l = make_cylinder_along_axis(hp_l0, hp_l1, 0.95, 16, 24)
+    hinge_pin_wing_r = make_cylinder_along_axis(hp_r0, hp_r1, 0.95, 16, 24)
+
+    def remove_upper_skin_wing(tris_in: List[Triangle]) -> List[Triangle]:
+        out_t: List[Triangle] = []
+        for p1, p2, p3 in tris_in:
+            ux, uy, uz = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]
+            vx, vy, vz = p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]
+            nx = uy * vz - uz * vy
+            ny = uz * vx - ux * vz
+            nz = ux * vy - uy * vx
+            nlen = math.sqrt(nx * nx + ny * ny + nz * nz)
+            if nlen > 1e-6:
+                nz_u = nz / nlen
+                z_avg_t = (p1[2] + p2[2] + p3[2]) / 3.0
+                y_avg_t = abs((p1[1] + p2[1] + p3[1]) / 3.0)
+                if abs(nz_u) > 0.62 and z_avg_t > (9.2 + y_avg_t * math.tan(dih) + 0.55):
+                    continue
+            out_t.append((p1, p2, p3))
+        return out_t
+
+    tip_solid_comps = [c for c in components if c[0] in ("W2_Left_Outer", "Flaperon_Left_Outer", "Carbon_Launch_Peg_4mm")]
+    tip_solid_comps.append(("Hinge_Pin_Wing_L", hinge_pin_wing_l, (255, 215, 70)))
+
+    w2_cutaway_tris: List[Triangle] = []
+    for name, tris, _ in components:
+        if name in ("W2_Left_Outer", "Flaperon_Left_Outer"):
+            w2_cutaway_tris.extend(remove_upper_skin_wing(tris))
+
+    peg_only = [c[1] for c in components if c[0] == "Carbon_Launch_Peg_4mm"][0]
+    tip_xray_comps: List[Tuple[str, List[Triangle], ColorRGB]] = [
+        ("W2_Cutaway_Blue", w2_cutaway_tris, (38, 172, 245)),
+        ("Internal_Carbon_Spar_6mm", spar_cyl_l, (32, 36, 44)),
+        ("Internal_Aux_Spar_2mm", aux_cyl_l, (32, 36, 44)),
+        ("Hinge_Pin_Wing_L", hinge_pin_wing_l, (255, 215, 70)),
+        ("Carbon_Launch_Peg_4mm", peg_only, (255, 205, 56)),
+    ]
+
+    # Monta a versão completa estilo FlightPoint Luft (Asas e Cauda em Azul Ciano com corte interno + Pod Dourado)
+    luft_style_comps: List[Tuple[str, List[Triangle], ColorRGB]] = []
+    for name, tris, col in components:
+        if name in ("Fuselage_Nose_Pod_245mm", "Fuselage_Canopy_Hatch"):
+            luft_style_comps.append((name, tris, (218, 178, 92)))  # Pod Dourado/Champagne estilo FlightPoint Luft
+        elif name in ("W1_Left_Inner", "W2_Left_Outer", "Flaperon_Left_Inner", "Flaperon_Left_Outer"):
+            luft_style_comps.append((name, remove_upper_skin_wing(tris), (38, 172, 245)))
+        elif name in ("W1_Right_Inner", "W2_Right_Outer", "Flaperon_Right_Inner", "Flaperon_Right_Outer"):
+            luft_style_comps.append((name, remove_upper_skin_wing(tris), (48, 182, 250)))
+        elif name.startswith("XTail_"):
+            luft_style_comps.append((name, tris, (42, 175, 248)))
+        else:
+            luft_style_comps.append((name, tris, col))
+    luft_style_comps.append(("Spar_L", spar_cyl_l, (30, 34, 42)))
+    luft_style_comps.append(("Spar_R", spar_cyl_r, (30, 34, 42)))
+    luft_style_comps.append(("Aux_L", aux_cyl_l, (30, 34, 42)))
+    luft_style_comps.append(("Hinge_Pin_L", hinge_pin_wing_l, (255, 215, 70)))
+    luft_style_comps.append(("Hinge_Pin_R", hinge_pin_wing_r, (255, 215, 70)))
+
+    tip_canvas = Image.new("RGB", (1800, 1080), (10, 20, 36))
+    tip_draw = ImageDraw.Draw(tip_canvas)
+    tip_draw.rectangle([18, 16, 1782, 74], fill=(7, 16, 30), outline=(90, 175, 255), width=2)
+    tip_draw.text(
+        (34, 34),
+        "SISTEMA DE DOBRADIÇAS MECÂNICAS INTERCALADAS (PIN-HINGE) + PONTA FLIGHTPOINT LUFT + OPÇÃO AMBIDESTRA",
+        fill=(255, 255, 255),
+        font=font_title,
+    )
+
+    p_luft_full = render_view_panel(
+        luft_style_comps,
+        width=980,
+        height=970,
+        yaw_deg=-38.0,
+        pitch_deg=-30.0,
+        zoom_scale=1.02,
+        pan_x=-20.0,
+        pan_y=20.0,
+    )
+    p_tip_ext = render_view_panel(
+        tip_solid_comps,
+        width=760,
+        height=475,
+        yaw_deg=-35.0,
+        pitch_deg=-34.0,
+        zoom_scale=2.65,
+        pan_x=0.0,
+        pan_y=10.0,
+        center_pt=(78.0, -365.0, 42.0),
+    )
+    p_tip_int = render_view_panel(
+        tip_xray_comps,
+        width=760,
+        height=475,
+        yaw_deg=-35.0,
+        pitch_deg=-34.0,
+        zoom_scale=2.65,
+        pan_x=0.0,
+        pan_y=10.0,
+        center_pt=(78.0, -365.0, 42.0),
+    )
+    tip_canvas.paste(p_luft_full, (18, 88))
+    tip_canvas.paste(p_tip_ext, (1022, 88))
+    tip_canvas.paste(p_tip_int, (1022, 583))
+    tip_draw.rectangle([18, 88, 998, 1058], outline=(65, 130, 205), width=2)
+    tip_draw.rectangle([1022, 88, 1782, 563], outline=(65, 130, 205), width=2)
+    tip_draw.rectangle([1022, 583, 1782, 1058], outline=(65, 130, 205), width=2)
+    tip_draw.text(
+        (34, 102),
+        "1. VISTA COMPLETA FLIGHTPOINT LUFT — OPÇÃO AMBIDESTRA DE PINO (ESQ [AMARELO] OU DIR [VERDE])",
+        fill=(255, 210, 102),
+        font=font_sub,
+    )
+    tip_draw.text(
+        (1038, 102),
+        "2. DOBRADIÇAS INTERCALADAS (KNUCKLE PIN-HINGE) + PONTA ARREDONDADA",
+        fill=(255, 210, 102),
+        font=font_sub,
+    )
+    tip_draw.text(
+        (1038, 597),
+        "3. CORTE INTERNO: EIXO DA DOBRADIÇA Ø2mm + NERVURAS + LONGARINAS",
+        fill=(255, 210, 102),
+        font=font_sub,
+    )
+
+    tip_jpg = os.path.join(bp_dir, "DLG_Mini_950_Rounded_Wingtip_Detail.jpg")
+    tip_canvas.save(tip_jpg, "JPEG", quality=96)
+    print(f"   -> Renders salvos em:\n      {png_path}\n      {jpg_path}\n      {tip_jpg}")
 
 
 if __name__ == "__main__":
